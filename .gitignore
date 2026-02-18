@@ -7,5 +7,5 @@ __pycache__/
 *.srt
 *.txt
 *.json
-!.env.example
-.venv/
+chunks*/
+.venv*/

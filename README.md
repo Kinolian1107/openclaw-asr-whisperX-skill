@@ -10,7 +10,7 @@
 
 使用 **WhisperX** 進行語音辨識的 AI Agent Skill。支援從 Google Drive 下載音訊/影片檔案，並使用 WhisperX（faster-whisper + wav2vec2 對齊 + 說話者辨識）在本地 GPU 上進行轉逐字稿。
 
-### WhisperX vs 基本 Whisper
+### WhisperX vs 基本 Whisper/speaches
 
 | 功能 | 基本 Whisper/speaches | WhisperX |
 |------|---------------------|----------|
@@ -20,33 +20,58 @@
 | 批次推理 | 無 | **有**（~70x 即時速度）|
 | 幻覺問題 | 常見 | 極少 |
 
+### 前置需求
+
+| 元件 | 版本 | 用途 |
+|------|------|------|
+| Python | 3.12（**不支援 3.14**） | WhisperX + PyTorch |
+| NVIDIA GPU | 任何支援 CUDA 的顯卡 | GPU 加速 |
+| NVIDIA Driver | 550+ | RTX 50 系列需要最新驅動 |
+| ffmpeg | v5+ | 音訊轉換 |
+| gdown | 最新版 | Google Drive 下載 |
+
+> **RTX 50 系列（Blackwell/sm_120）注意事項：** 需要 PyTorch nightly + CUDA 12.8。穩定版 PyTorch 不支援 sm_120 架構。
+
 ### 安裝
 
-#### 1. 建立 Python 虛擬環境
+#### 1. 建立 Python 虛擬環境（使用 Python 3.12）
 
 ```bash
-python3 -m venv /home/kino/asr/.venv
-source /home/kino/asr/.venv/bin/activate
+/usr/bin/python3.12 -m venv /path/to/whisperx-venv
 ```
 
-#### 2. 安裝依賴
+#### 2. 安裝 PyTorch（根據 GPU 架構選擇）
+
+**RTX 50 系列（Blackwell, sm_120）— 需要 nightly：**
+```bash
+/path/to/whisperx-venv/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+
+**RTX 40/30/20 系列 — 用穩定版：**
+```bash
+/path/to/whisperx-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+#### 3. 安裝 WhisperX + 依賴
 
 ```bash
-pip install whisperx torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install gdown
+/path/to/whisperx-venv/bin/pip install whisperx gdown
 ```
 
-#### 3. 安裝系統工具
+#### 4. 修正 cuDNN（RTX 50 系列需要）
 
 ```bash
-# ffmpeg
-brew install ffmpeg  # 或 apt install ffmpeg
-
-# gdown (Google Drive 下載)
-pip install gdown
+/path/to/whisperx-venv/bin/pip install --pre nvidia-cudnn-cu12 --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall --no-deps
 ```
 
-#### 4.（選用）設定 HuggingFace Token（說話者辨識需要）
+#### 5. 安裝系統工具
+
+```bash
+sudo apt install -y ffmpeg
+# 或 brew install ffmpeg
+```
+
+#### 6.（選用）設定 HuggingFace Token（說話者辨識需要）
 
 ```bash
 export HF_TOKEN=hf_your_token_here
@@ -60,13 +85,13 @@ export HF_TOKEN=hf_your_token_here
 
 ```bash
 # 基本轉逐字稿
-/home/kino/asr/.venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh
+/path/to/whisperx-venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh
 
 # 含說話者辨識
-HF_TOKEN=hf_xxx /home/kino/asr/.venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh --diarize
+HF_TOKEN=hf_xxx /path/to/whisperx-venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh --diarize
 
 # 指定輸出格式
-/home/kino/asr/.venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh --format json
+/path/to/whisperx-venv/bin/python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang zh --format json
 ```
 
 #### AI Agent
@@ -75,15 +100,13 @@ HF_TOKEN=hf_xxx /home/kino/asr/.venv/bin/python3 scripts/transcribe_whisperx.py 
 
 ### AI Agent 平台安裝
 
-#### OpenClaw
-
+**OpenClaw：**
 ```bash
 ln -sf /path/to/gfile-asr-whisperX-skill ~/.openclaw/skills/gfile-asr-whisperx
 ```
 
-#### Cursor / Claude Code / Codex
-
-將 `SKILL.md`（或 `CLAUDE.md` / `AGENTS.md`）加入專案根目錄。
+**Cursor / Claude Code / Codex / Gemini CLI：**
+將此 repo clone 到專案目錄，agent 會自動讀取 `SKILL.md` / `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`。
 
 ### 環境變數
 
@@ -105,29 +128,51 @@ ln -sf /path/to/gfile-asr-whisperX-skill ~/.openclaw/skills/gfile-asr-whisperx
 
 AI Agent Skill for speech recognition using **WhisperX**. Downloads audio/video from Google Drive and transcribes locally using WhisperX (faster-whisper + wav2vec2 alignment + speaker diarization) with GPU acceleration.
 
+### Prerequisites
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| Python | 3.12 (**not 3.14**) | WhisperX + PyTorch |
+| NVIDIA GPU | Any with CUDA | GPU acceleration |
+| NVIDIA Driver | 550+ | RTX 50 series needs latest |
+| ffmpeg | v5+ | Audio conversion |
+| gdown | Latest | Google Drive downloads |
+
+> **RTX 50 series (Blackwell/sm_120) note:** Requires PyTorch nightly + CUDA 12.8. Stable PyTorch does not support sm_120.
+
 ### Installation
 
-#### 1. Create Python virtual environment
+#### 1. Create venv with Python 3.12
 
 ```bash
-python3 -m venv /home/kino/asr/.venv
-source /home/kino/asr/.venv/bin/activate
+/usr/bin/python3.12 -m venv /path/to/whisperx-venv
 ```
 
-#### 2. Install dependencies
+#### 2. Install PyTorch
+
+**RTX 50 series (nightly required):**
+```bash
+/path/to/whisperx-venv/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+
+**RTX 40/30/20 series (stable):**
+```bash
+/path/to/whisperx-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+#### 3. Install WhisperX
 
 ```bash
-pip install whisperx torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install gdown
+/path/to/whisperx-venv/bin/pip install whisperx gdown
 ```
 
-#### 3. Install system tools
+#### 4. Fix cuDNN (RTX 50 series only)
 
 ```bash
-brew install ffmpeg  # or apt install ffmpeg
+/path/to/whisperx-venv/bin/pip install --pre nvidia-cudnn-cu12 --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall --no-deps
 ```
 
-#### 4. (Optional) Set HuggingFace Token for speaker diarization
+#### 5. (Optional) HuggingFace token for speaker diarization
 
 ```bash
 export HF_TOKEN=hf_your_token_here
@@ -145,11 +190,14 @@ HF_TOKEN=hf_xxx python3 scripts/transcribe_whisperx.py /path/to/audio.mp3 --lang
 
 ### AI Agent Installation
 
-#### OpenClaw
+**OpenClaw:**
 ```bash
 ln -sf /path/to/gfile-asr-whisperX-skill ~/.openclaw/skills/gfile-asr-whisperx
 ```
 
-### License
+**Cursor / Claude Code / Codex / Gemini CLI:**
+Clone this repo into your project directory.
+
+## License
 
 MIT
