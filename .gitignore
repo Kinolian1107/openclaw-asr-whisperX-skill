@@ -9,3 +9,4 @@ __pycache__/
 *.json
 chunks*/
 .venv*/
+gfile-asr-whisperX-skill
