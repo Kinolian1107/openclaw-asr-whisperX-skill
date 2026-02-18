@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+*.wav
+*.mp3
+*.mp4
+*.srt
+*.txt
+*.json
+!.env.example
+.venv/
