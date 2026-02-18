@@ -54,24 +54,20 @@
 
 #### 3. 安裝 WhisperX + 依賴
 
-```bash
-/path/to/whisperx-venv/bin/pip install whisperx gdown
-```
-
-#### 4. 修正 cuDNN（RTX 50 系列需要）
+> **重要**：`whisperx` 必須使用 `--no-deps` 安裝以避免 PyTorch 版本衝突，依賴手動安裝。
 
 ```bash
-/path/to/whisperx-venv/bin/pip install --pre nvidia-cudnn-cu12 --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall --no-deps
+/path/to/whisperx-venv/bin/pip install whisperx --no-deps
+/path/to/whisperx-venv/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
 ```
 
-#### 5. 安裝系統工具
+#### 4. 安裝系統工具
 
 ```bash
 sudo apt install -y ffmpeg
-# 或 brew install ffmpeg
 ```
 
-#### 6.（選用）設定 HuggingFace Token（說話者辨識需要）
+#### 5.（選用）設定 HuggingFace Token（說話者辨識需要）
 
 ```bash
 export HF_TOKEN=hf_your_token_here
@@ -162,17 +158,14 @@ AI Agent Skill for speech recognition using **WhisperX**. Downloads audio/video 
 
 #### 3. Install WhisperX
 
-```bash
-/path/to/whisperx-venv/bin/pip install whisperx gdown
-```
-
-#### 4. Fix cuDNN (RTX 50 series only)
+> **Important**: Install `whisperx` with `--no-deps` to avoid strict PyTorch version conflicts.
 
 ```bash
-/path/to/whisperx-venv/bin/pip install --pre nvidia-cudnn-cu12 --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall --no-deps
+/path/to/whisperx-venv/bin/pip install whisperx --no-deps
+/path/to/whisperx-venv/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
 ```
 
-#### 5. (Optional) HuggingFace token for speaker diarization
+#### 4. (Optional) HuggingFace token for speaker diarization
 
 ```bash
 export HF_TOKEN=hf_your_token_here

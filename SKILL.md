@@ -90,7 +90,7 @@ HF_TOKEN=hf_xxx /home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `WHISPERX_MODEL` | `large-v3-turbo` | Model size |
-| `ASR_DEVICE` | `cuda` | Device (cuda/cpu) |
+| `WHISPERX_DEVICE` | `auto` | Device (cuda/cpu/auto) |
 | `ASR_COMPUTE_TYPE` | `int8` | Compute type |
 | `WHISPERX_BATCH_SIZE` | `16` | Batch size for inference |
 | `HF_TOKEN` | (none) | HuggingFace token for diarization |
