@@ -30,7 +30,7 @@
 | ffmpeg | v5+ | 音訊轉換 |
 | gdown | 最新版 | Google Drive 下載 |
 
-> **RTX 50 系列（Blackwell/sm_120）注意事項：** pip install whisperx 會自動安裝相容的 PyTorch + CUDA 12.8。
+> **RTX 50 系列（Blackwell/sm_120）注意事項：** 需要額外安裝 PyTorch nightly + CUDA 12.8，見下方步驟。
 
 ### 安裝
 
@@ -40,13 +40,27 @@
 /usr/bin/python3.12 -m venv /path/to/asr-venv
 ```
 
-#### 2. 安裝 WhisperX（一鍵安裝所有依賴）
+#### 2. 安裝 WhisperX
 
 ```bash
-/path/to/asr-venv/bin/pip install "whisperx>=3.3.4" gdown silero-vad
+/path/to/asr-venv/bin/pip install whisperx gdown
 ```
 
-這會自動安裝 PyTorch、faster-whisper、pyannote-audio、wav2vec2 等所有依賴。
+#### 3. RTX 50 系列（Blackwell/sm_120）必要步驟
+
+PyPI 上的 PyTorch 尚未支援 sm_120。必須從 nightly 安裝 cu128 版本：
+
+```bash
+/path/to/asr-venv/bin/pip install --pre torch torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --force-reinstall --no-deps
+
+/path/to/asr-venv/bin/pip install --pre nvidia-cudnn-cu12 nvidia-nccl-cu12 \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --force-reinstall --no-deps
+```
+
+> 非 RTX 50 系列的 GPU 可跳過此步驟，`pip install whisperx` 已包含相容的 PyTorch。
 
 #### 3. 安裝系統工具
 
@@ -121,7 +135,7 @@ AI Agent Skill for speech recognition using **WhisperX**. Downloads audio/video 
 | ffmpeg | v5+ | Audio conversion |
 | gdown | Latest | Google Drive downloads |
 
-> **RTX 50 series (Blackwell/sm_120) note:** `pip install whisperx` automatically installs compatible PyTorch + CUDA 12.8.
+> **RTX 50 series (Blackwell/sm_120) note:** Requires PyTorch nightly + CUDA 12.8. See step 3.
 
 ### Installation
 
@@ -131,15 +145,29 @@ AI Agent Skill for speech recognition using **WhisperX**. Downloads audio/video 
 /usr/bin/python3.12 -m venv /path/to/asr-venv
 ```
 
-#### 2. Install WhisperX (one command installs all deps)
+#### 2. Install WhisperX
 
 ```bash
-/path/to/asr-venv/bin/pip install "whisperx>=3.3.4" gdown silero-vad
+/path/to/asr-venv/bin/pip install whisperx gdown
 ```
 
-This automatically installs PyTorch, faster-whisper, pyannote-audio, wav2vec2, and all other dependencies.
+#### 3. RTX 50 series (Blackwell/sm_120) — required extra step
 
-#### 3. (Optional) HuggingFace token for speaker diarization
+PyPI PyTorch doesn't support sm_120 yet. Install nightly cu128 build:
+
+```bash
+/path/to/asr-venv/bin/pip install --pre torch torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --force-reinstall --no-deps
+
+/path/to/asr-venv/bin/pip install --pre nvidia-cudnn-cu12 nvidia-nccl-cu12 \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --force-reinstall --no-deps
+```
+
+> Skip this step for non-RTX 50 series GPUs.
+
+#### 4. (Optional) HuggingFace token for speaker diarization
 
 ```bash
 export HF_TOKEN=hf_your_token_here
