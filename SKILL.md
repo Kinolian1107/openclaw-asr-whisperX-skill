@@ -36,16 +36,14 @@ Activate when user sends Google Drive link + mentions transcription keywords (è½
 
 ## Prerequisites
 
-Python venv at `/home/kino/asr/.venv-whisperx/` with whisperx + PyTorch nightly (CUDA 12.8 for RTX 50 series):
+Python venv at `/home/kino/asr/.venv/` with whisperx + PyTorch (CUDA 12.8 for RTX 50 series):
 
 ```bash
-/usr/bin/python3.12 -m venv /home/kino/asr/.venv-whisperx
-/home/kino/asr/.venv-whisperx/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-/home/kino/asr/.venv-whisperx/bin/pip install whisperx --no-deps
-/home/kino/asr/.venv-whisperx/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
+/usr/bin/python3.12 -m venv /home/kino/asr/.venv
+/home/kino/asr/.venv/bin/pip install "whisperx>=3.3.4" gdown silero-vad
 ```
 
-> **Note**: `whisperx` must be installed with `--no-deps` to avoid strict PyTorch version conflicts. Dependencies are installed separately.
+This installs WhisperX with all dependencies including PyTorch, pyannote-audio, faster-whisper, etc.
 
 ## Workflow
 
@@ -60,14 +58,14 @@ gdown "https://drive.google.com/uc?id={FILE_ID}" -O /home/kino/asr/{filename}
 ### Step 2: Run WhisperX Transcription
 
 ```bash
-/home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
+/home/kino/asr/.venv/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
     /home/kino/asr/{filename} --lang zh --format srt
 ```
 
 For speaker diarization (requires HF_TOKEN env var):
 
 ```bash
-HF_TOKEN=hf_xxx /home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
+HF_TOKEN=hf_xxx /home/kino/asr/.venv/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
     /home/kino/asr/{filename} --lang zh --format srt --diarize
 ```
 

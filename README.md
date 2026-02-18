@@ -30,44 +30,31 @@
 | ffmpeg | v5+ | 音訊轉換 |
 | gdown | 最新版 | Google Drive 下載 |
 
-> **RTX 50 系列（Blackwell/sm_120）注意事項：** 需要 PyTorch nightly + CUDA 12.8。穩定版 PyTorch 不支援 sm_120 架構。
+> **RTX 50 系列（Blackwell/sm_120）注意事項：** pip install whisperx 會自動安裝相容的 PyTorch + CUDA 12.8。
 
 ### 安裝
 
 #### 1. 建立 Python 虛擬環境（使用 Python 3.12）
 
 ```bash
-/usr/bin/python3.12 -m venv /path/to/whisperx-venv
+/usr/bin/python3.12 -m venv /path/to/asr-venv
 ```
 
-#### 2. 安裝 PyTorch（根據 GPU 架構選擇）
-
-**RTX 50 系列（Blackwell, sm_120）— 需要 nightly：**
-```bash
-/path/to/whisperx-venv/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-```
-
-**RTX 40/30/20 系列 — 用穩定版：**
-```bash
-/path/to/whisperx-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-#### 3. 安裝 WhisperX + 依賴
-
-> **重要**：`whisperx` 必須使用 `--no-deps` 安裝以避免 PyTorch 版本衝突，依賴手動安裝。
+#### 2. 安裝 WhisperX（一鍵安裝所有依賴）
 
 ```bash
-/path/to/whisperx-venv/bin/pip install whisperx --no-deps
-/path/to/whisperx-venv/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
+/path/to/asr-venv/bin/pip install "whisperx>=3.3.4" gdown silero-vad
 ```
 
-#### 4. 安裝系統工具
+這會自動安裝 PyTorch、faster-whisper、pyannote-audio、wav2vec2 等所有依賴。
+
+#### 3. 安裝系統工具
 
 ```bash
 sudo apt install -y ffmpeg
 ```
 
-#### 5.（選用）設定 HuggingFace Token（說話者辨識需要）
+#### 4.（選用）設定 HuggingFace Token（說話者辨識需要）
 
 ```bash
 export HF_TOKEN=hf_your_token_here
@@ -134,38 +121,25 @@ AI Agent Skill for speech recognition using **WhisperX**. Downloads audio/video 
 | ffmpeg | v5+ | Audio conversion |
 | gdown | Latest | Google Drive downloads |
 
-> **RTX 50 series (Blackwell/sm_120) note:** Requires PyTorch nightly + CUDA 12.8. Stable PyTorch does not support sm_120.
+> **RTX 50 series (Blackwell/sm_120) note:** `pip install whisperx` automatically installs compatible PyTorch + CUDA 12.8.
 
 ### Installation
 
 #### 1. Create venv with Python 3.12
 
 ```bash
-/usr/bin/python3.12 -m venv /path/to/whisperx-venv
+/usr/bin/python3.12 -m venv /path/to/asr-venv
 ```
 
-#### 2. Install PyTorch
-
-**RTX 50 series (nightly required):**
-```bash
-/path/to/whisperx-venv/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-```
-
-**RTX 40/30/20 series (stable):**
-```bash
-/path/to/whisperx-venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-```
-
-#### 3. Install WhisperX
-
-> **Important**: Install `whisperx` with `--no-deps` to avoid strict PyTorch version conflicts.
+#### 2. Install WhisperX (one command installs all deps)
 
 ```bash
-/path/to/whisperx-venv/bin/pip install whisperx --no-deps
-/path/to/whisperx-venv/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
+/path/to/asr-venv/bin/pip install "whisperx>=3.3.4" gdown silero-vad
 ```
 
-#### 4. (Optional) HuggingFace token for speaker diarization
+This automatically installs PyTorch, faster-whisper, pyannote-audio, wav2vec2, and all other dependencies.
+
+#### 3. (Optional) HuggingFace token for speaker diarization
 
 ```bash
 export HF_TOKEN=hf_your_token_here
