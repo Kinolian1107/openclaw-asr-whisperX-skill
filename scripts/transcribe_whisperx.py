@@ -10,28 +10,91 @@ Uses WhisperX for:
 
 Usage:
     python3 transcribe_whisperx.py <input_file> [--lang zh] [--format srt] [--diarize]
+    python3 transcribe_whisperx.py <gdrive_url> [--lang zh] [--format srt]
 """
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ASR_DIR = os.environ.get("ASR_DIR", "/home/kino/asr")
 HF_CACHE = os.environ.get("HF_HOME", "/home/kino/ollama-models/huggingface-hub")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
-DEVICE = os.environ.get("WHISPERX_DEVICE", "cuda")
 COMPUTE_TYPE = os.environ.get("WHISPERX_COMPUTE_TYPE", "int8")
 MODEL_SIZE = os.environ.get("WHISPERX_MODEL", "large-v3-turbo")
 BATCH_SIZE = int(os.environ.get("WHISPERX_BATCH_SIZE", "16"))
+GDOWN_PATH = os.environ.get("GDOWN_PATH", "gdown")
 
 
 def run_cmd(cmd, **kwargs):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, **kwargs)
     return result.stdout.strip(), result.stderr.strip(), result.returncode
+
+
+def detect_best_device():
+    """Auto-detect usable device: try CUDA, fall back to CPU."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "cpu"
+        try:
+            t = torch.zeros(1, device="cuda")
+            del t
+            torch.cuda.empty_cache()
+            return "cuda"
+        except Exception:
+            print("WARNING: CUDA available but kernel execution failed (GPU too new for this PyTorch build)")
+            print("         Falling back to CPU. This will be slower but still works.")
+            return "cpu"
+    except ImportError:
+        return "cpu"
+
+
+def extract_gdrive_id(url: str) -> str:
+    patterns = [
+        r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)",
+        r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)",
+        r"id=([a-zA-Z0-9_-]+)",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def download_gdrive(url: str, output_dir: str) -> str:
+    file_id = extract_gdrive_id(url)
+    if not file_id:
+        raise ValueError(f"Cannot extract Google Drive file ID from: {url}")
+    output = os.path.join(output_dir, f"gdrive_{file_id}")
+    print(f"Downloading from Google Drive (file_id: {file_id})...")
+    stdout, stderr, rc = run_cmd(
+        f'{GDOWN_PATH} "https://drive.google.com/uc?id={file_id}" -O "{output}"'
+    )
+    if rc != 0:
+        raise RuntimeError(f"gdown failed: {stderr}")
+    ext = detect_extension(output)
+    if ext:
+        new_path = f"{output}.{ext}"
+        os.rename(output, new_path)
+        return new_path
+    return output
+
+
+def detect_extension(path: str) -> str:
+    stdout, _, _ = run_cmd(f'file --brief --mime-type "{path}"')
+    mime_map = {
+        "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-wav": "wav",
+        "audio/wav": "wav", "audio/flac": "flac", "audio/ogg": "ogg",
+        "video/mp4": "mp4", "video/x-matroska": "mkv",
+        "video/quicktime": "mov", "video/webm": "webm",
+    }
+    return mime_map.get(stdout.strip(), "")
 
 
 def detect_mime(filepath: str) -> str:
@@ -75,18 +138,24 @@ def write_srt(segments, filepath, include_speaker=False):
 
 
 def transcribe(audio_path: str, language: str, output_format: str,
-               diarize: bool = False, output_dir: str = ASR_DIR):
+               diarize: bool = False, output_dir: str = ASR_DIR,
+               device: str = None):
     import whisperx
     import torch
 
     os.environ["HF_HOME"] = HF_CACHE
     os.environ.setdefault("TRANSFORMERS_CACHE", HF_CACHE)
 
-    print(f"Loading WhisperX model: {MODEL_SIZE} (device={DEVICE}, compute={COMPUTE_TYPE})")
+    if device is None:
+        device = detect_best_device()
+
+    compute = COMPUTE_TYPE if device == "cuda" else "int8"
+    print(f"Loading WhisperX model: {MODEL_SIZE} (device={device}, compute={compute})")
+
     model = whisperx.load_model(
         MODEL_SIZE,
-        device=DEVICE,
-        compute_type=COMPUTE_TYPE,
+        device=device,
+        compute_type=compute,
         download_root=os.path.join(HF_CACHE, "whisperx"),
     )
 
@@ -95,11 +164,10 @@ def transcribe(audio_path: str, language: str, output_format: str,
     duration = len(audio) / 16000
     print(f"Duration: {duration:.1f}s ({duration/60:.1f} min)")
 
-    batch_size = int(os.environ.get("WHISPERX_BATCH_SIZE", "16"))
-    print(f"Transcribing with batch_size={batch_size}...")
+    print(f"Transcribing with batch_size={BATCH_SIZE}...")
     result = model.transcribe(
         audio,
-        batch_size=batch_size,
+        batch_size=BATCH_SIZE,
         language=language if language != "auto" else None,
     )
 
@@ -111,14 +179,14 @@ def transcribe(audio_path: str, language: str, output_format: str,
     try:
         align_model, align_metadata = whisperx.load_align_model(
             language_code=detected_lang,
-            device=DEVICE,
+            device=device,
         )
         result = whisperx.align(
             result["segments"],
             align_model,
             align_metadata,
             audio,
-            DEVICE,
+            device,
             return_char_alignments=False,
         )
         print(f"Aligned segments: {len(result['segments'])}")
@@ -130,7 +198,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
         try:
             diarize_model = whisperx.DiarizationPipeline(
                 use_auth_token=HF_TOKEN,
-                device=DEVICE,
+                device=device,
             )
             diarize_segments = diarize_model(audio)
             result = whisperx.assign_word_speakers(diarize_segments, result)
@@ -139,10 +207,11 @@ def transcribe(audio_path: str, language: str, output_format: str,
         except Exception as e:
             print(f"WARNING: Diarization failed ({e}), continuing without speaker labels")
     elif diarize and not HF_TOKEN:
-        print("WARNING: HF_TOKEN not set, skipping diarization. Set HF_TOKEN env var for speaker identification.")
+        print("WARNING: HF_TOKEN not set, skipping diarization.")
 
     del model
-    torch.cuda.empty_cache()
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     segments = result["segments"]
     basename = Path(audio_path).stem
@@ -188,6 +257,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
                 "language": detected_lang,
                 "model": MODEL_SIZE,
                 "engine": "whisperx",
+                "device": device,
                 "diarization": diarize,
             }, f, ensure_ascii=False, indent=2)
         print(f"JSON: {json_path}")
@@ -197,7 +267,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
     print(f"  Duration: {duration:.0f}s ({duration/60:.1f} min)")
     print(f"  Segments: {len(segments)}")
     print(f"  Language: {detected_lang}")
-    print(f"  Engine: WhisperX ({MODEL_SIZE})")
+    print(f"  Engine: WhisperX ({MODEL_SIZE}) on {device}")
     if diarize:
         speakers = set(s.get("speaker", "") for s in segments if s.get("speaker"))
         print(f"  Speakers: {len(speakers)}")
@@ -209,7 +279,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
 def main():
     parser = argparse.ArgumentParser(
         description="WhisperX ASR Pipeline with alignment and optional diarization")
-    parser.add_argument("input", help="Input audio/video file path")
+    parser.add_argument("input", help="Input audio/video file path or Google Drive URL")
     parser.add_argument("--lang", default="zh", help="Language code (zh, en, ja, auto)")
     parser.add_argument("--format", default="srt", choices=["srt", "text", "json", "all"],
                         help="Output format (default: srt)")
@@ -218,9 +288,15 @@ def main():
     parser.add_argument("--output-dir", default=ASR_DIR, help="Output directory")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                         help="Batch size for inference")
+    parser.add_argument("--device", default=None, choices=["cuda", "cpu"],
+                        help="Force device (default: auto-detect)")
     args = parser.parse_args()
 
     input_path = args.input
+
+    if "drive.google.com" in input_path:
+        input_path = download_gdrive(input_path, args.output_dir)
+
     if not os.path.exists(input_path):
         print(f"ERROR: File not found: {input_path}")
         sys.exit(1)
@@ -231,9 +307,9 @@ def main():
     basename = Path(input_path).stem
     wav_path = os.path.join(args.output_dir, f"{basename}.wav")
 
-    if not input_path.endswith(".wav"):
+    if mime.startswith("video/") or (mime.startswith("audio/") and not input_path.endswith(".wav")):
         extract_audio(input_path, wav_path)
-    else:
+    elif input_path.endswith(".wav"):
         wav_path = input_path
 
     segments = transcribe(
@@ -242,6 +318,7 @@ def main():
         output_format=args.format,
         diarize=args.diarize,
         output_dir=args.output_dir,
+        device=args.device,
     )
     print(f"\nDone! {len(segments)} segments transcribed.")
 

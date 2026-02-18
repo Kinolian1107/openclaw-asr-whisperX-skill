@@ -23,9 +23,16 @@ Transcribe audio/video from Google Drive using **WhisperX** (faster-whisper + wa
 3. **wav2vec2 forced alignment** for word-level accurate timestamps
 4. **Optional speaker diarization** (identifies who said what)
 
+## Mode Check
+
+**Before executing, read `/home/kino/.openclaw/workspace/asr_config.json`.**
+- If `"mode": "whisperx"` → proceed with this skill
+- If `"mode": "speaches"` → use the `gfile-asr-speaches` skill instead
+- User can switch modes with `/asrmode`
+
 ## Trigger Conditions
 
-Same as gfile-asr-speaches. Activate when user sends Google Drive link + mentions transcription keywords.
+Activate when user sends Google Drive link + mentions transcription keywords (轉逐字稿, 轉文字, transcribe, ASR, etc.).
 
 ## Prerequisites
 
@@ -34,9 +41,11 @@ Python venv at `/home/kino/asr/.venv-whisperx/` with whisperx + PyTorch nightly 
 ```bash
 /usr/bin/python3.12 -m venv /home/kino/asr/.venv-whisperx
 /home/kino/asr/.venv-whisperx/bin/pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-/home/kino/asr/.venv-whisperx/bin/pip install whisperx gdown
-/home/kino/asr/.venv-whisperx/bin/pip install --pre nvidia-cudnn-cu12 --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall --no-deps
+/home/kino/asr/.venv-whisperx/bin/pip install whisperx --no-deps
+/home/kino/asr/.venv-whisperx/bin/pip install faster-whisper ctranslate2 nltk numpy omegaconf pandas pyannote-audio huggingface-hub gdown transformers
 ```
+
+> **Note**: `whisperx` must be installed with `--no-deps` to avoid strict PyTorch version conflicts. Dependencies are installed separately.
 
 ## Workflow
 
@@ -92,6 +101,23 @@ HF_TOKEN=hf_xxx /home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/
 - **Audio**: MP3, WAV, M4A, FLAC, OGG, AAC, WMA
 - **Video**: MP4, MKV, AVI, MOV, WebM, FLV
 - **Sources**: Google Drive links, local file paths
+
+## /asrmode Command
+
+When user types `/asrmode`:
+
+1. Read `/home/kino/.openclaw/workspace/asr_config.json`
+2. Show current mode and options:
+   ```
+   目前 ASR 模式：whisperx
+   
+   可用模式：
+   1️⃣ speaches — ffmpeg silencedetect + speaches Docker API (faster-whisper GPU)
+   2️⃣ whisperx — WhisperX 批次推理 + wav2vec2 對齊 + 說話者辨識
+   
+   輸入 1 或 2 切換模式
+   ```
+3. After user selects, update `asr_config.json` `"mode"` field and confirm
 
 ## References
 
