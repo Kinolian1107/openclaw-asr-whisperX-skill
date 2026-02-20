@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-WhisperX ASR Pipeline: Google Drive → ffmpeg → WhisperX → SRT
+WhisperX ASR Pipeline v2
 
-Uses WhisperX for:
-- Built-in VAD preprocessing (eliminates hallucinations)
-- wav2vec2 forced alignment (word-level timestamp accuracy)
-- Optional speaker diarization (identifies who is speaking)
-- Batched inference (~70x realtime on GPU)
+Features:
+- Topic-based initial_prompt for better accuracy
+- Audio denoising via ffmpeg
+- OpenCC simplified→traditional Chinese (s2twp)
+- Hotwords support (faster-whisper native)
+- Custom corrections dictionary
+- Speaker embedding: auto-extract unknown speakers + match against known
+- Speaker diarization with pyannote
 
 Usage:
-    python3 transcribe_whisperx.py <input_file> [--lang zh] [--format srt] [--diarize]
-    python3 transcribe_whisperx.py <gdrive_url> [--lang zh] [--format srt]
+    python3 transcribe_whisperx.py <input_file> --lang zh --format srt
+    python3 transcribe_whisperx.py <input_file> --lang zh --topic "財經討論" --diarize
+    python3 transcribe_whisperx.py <input_file> --lang zh --denoise --diarize
 """
 
 import argparse
@@ -19,7 +23,10 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+
+import numpy as np
 
 ASR_DIR = os.environ.get("ASR_DIR", "/home/kino/asr")
 HF_CACHE = os.environ.get("HF_HOME", "/home/kino/ollama-models/huggingface-hub")
@@ -29,6 +36,14 @@ MODEL_SIZE = os.environ.get("WHISPERX_MODEL", "large-v3-turbo")
 BATCH_SIZE = int(os.environ.get("WHISPERX_BATCH_SIZE", "16"))
 GDOWN_PATH = os.environ.get("GDOWN_PATH", "gdown")
 
+WORKSPACE = "/home/kino/.openclaw/workspace"
+DEFAULT_HOTWORDS_FILE = os.path.join(WORKSPACE, "whisperx_hotwords.txt")
+DEFAULT_CORRECTIONS_FILE = os.path.join(WORKSPACE, "asr_corrections.json")
+SPEAKER_DB = os.environ.get("SPEAKER_DB", os.path.join(ASR_DIR, "speaker_embeddings"))
+SPEAKER_SAMPLES = os.environ.get("SPEAKER_SAMPLES", os.path.join(ASR_DIR, "speaker_samples"))
+EMBED_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
+SPEAKER_MATCH_THRESHOLD = 0.65
+
 
 def run_cmd(cmd, **kwargs):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, **kwargs)
@@ -36,7 +51,6 @@ def run_cmd(cmd, **kwargs):
 
 
 def detect_best_device():
-    """Auto-detect usable device: try CUDA, fall back to CPU."""
     try:
         import torch
         if not torch.cuda.is_available():
@@ -47,8 +61,7 @@ def detect_best_device():
             torch.cuda.empty_cache()
             return "cuda"
         except Exception:
-            print("WARNING: CUDA available but kernel execution failed (GPU too new for this PyTorch build)")
-            print("         Falling back to CPU. This will be slower but still works.")
+            print("WARNING: CUDA unavailable, falling back to CPU")
             return "cpu"
     except ImportError:
         return "cpu"
@@ -102,20 +115,22 @@ def detect_mime(filepath: str) -> str:
     return stdout.strip()
 
 
-def get_duration(filepath: str) -> float:
-    stdout, _, _ = run_cmd(
-        f'ffprobe -v error -show_entries format=duration -of csv=p=0 "{filepath}"'
-    )
-    return float(stdout.strip())
-
-
-def extract_audio(input_path: str, output_path: str):
-    print(f"Extracting audio → {output_path}")
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le",
-         "-ar", "16000", "-ac", "1", output_path],
-        capture_output=True, check=True
-    )
+def extract_audio(input_path: str, output_path: str, denoise: bool = False):
+    if denoise:
+        print(f"Extracting audio with denoising → {output_path}")
+        af = "highpass=f=200,lowpass=f=3000,afftdn=nf=-25"
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, "-vn", "-af", af,
+             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output_path],
+            capture_output=True, check=True
+        )
+    else:
+        print(f"Extracting audio → {output_path}")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le",
+             "-ar", "16000", "-ac", "1", output_path],
+            capture_output=True, check=True
+        )
 
 
 def format_timestamp(seconds: float) -> str:
@@ -126,20 +141,176 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def write_srt(segments, filepath, include_speaker=False):
+def load_hotwords(hotwords_file: str) -> str:
+    if not os.path.exists(hotwords_file):
+        return ""
+    words = []
+    with open(hotwords_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                words.append(line)
+    if words:
+        hotwords_str = ", ".join(words)
+        print(f"Loaded {len(words)} hotwords from {hotwords_file}")
+        return hotwords_str
+    return ""
+
+
+def load_corrections(corrections_file: str) -> dict:
+    if not os.path.exists(corrections_file):
+        return {}
+    with open(corrections_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data.pop("_comment", None)
+    if data:
+        print(f"Loaded {len(data)} corrections from {corrections_file}")
+    return data
+
+
+def apply_corrections(text: str, corrections: dict) -> str:
+    for wrong, right in corrections.items():
+        text = text.replace(wrong, right)
+    return text
+
+
+def convert_to_traditional(text: str, converter) -> str:
+    return converter.convert(text)
+
+
+def write_srt(segments, filepath, speaker_map=None):
     with open(filepath, "w", encoding="utf-8") as f:
         for i, seg in enumerate(segments, 1):
             f.write(f"{i}\n")
             f.write(f"{format_timestamp(seg['start'])} --> {format_timestamp(seg['end'])}\n")
             text = seg["text"].strip()
-            if include_speaker and "speaker" in seg:
-                text = f"[{seg['speaker']}] {text}"
+            if speaker_map and "speaker" in seg:
+                name = speaker_map.get(seg["speaker"], seg["speaker"])
+                text = f"[{name}] {text}"
             f.write(f"{text}\n\n")
+
+
+def extract_speaker_samples(audio, segments, basename, output_dir):
+    """Extract representative audio clips for each speaker."""
+    import soundfile as sf
+
+    speakers = {}
+    for seg in segments:
+        spk = seg.get("speaker")
+        if not spk:
+            continue
+        if spk not in speakers:
+            speakers[spk] = []
+        speakers[spk].append(seg)
+
+    session_dir = os.path.join(output_dir, f"{datetime.now().strftime('%Y%m%d')}_{basename}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    sample_paths = {}
+    for spk, segs in speakers.items():
+        segs_sorted = sorted(segs, key=lambda s: s["end"] - s["start"], reverse=True)
+        collected = np.array([], dtype=np.float32)
+        target_duration = 15.0  # seconds
+
+        for seg in segs_sorted:
+            start_sample = int(seg["start"] * 16000)
+            end_sample = int(seg["end"] * 16000)
+            chunk = audio[start_sample:end_sample]
+            collected = np.concatenate([collected, chunk])
+            if len(collected) / 16000 >= target_duration:
+                break
+
+        if len(collected) / 16000 < 3.0:
+            print(f"  {spk}: too short ({len(collected)/16000:.1f}s), skipping sample")
+            continue
+
+        wav_path = os.path.join(session_dir, f"{spk}.wav")
+        sf.write(wav_path, collected, 16000)
+        sample_paths[spk] = wav_path
+        print(f"  {spk}: saved {len(collected)/16000:.1f}s sample → {wav_path}")
+
+    return session_dir, sample_paths
+
+
+def match_speakers_against_db(sample_paths: dict, device: str) -> dict:
+    """Match extracted speaker samples against registered speaker embeddings."""
+    os.environ["HF_HOME"] = HF_CACHE
+    os.environ.setdefault("TRANSFORMERS_CACHE", HF_CACHE)
+
+    metadata_file = os.path.join(SPEAKER_DB, "speakers.json")
+    if not os.path.exists(metadata_file):
+        print("  No registered speakers in DB, skipping matching")
+        return {label: label for label in sample_paths}
+
+    with open(metadata_file, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    known_speakers = meta.get("speakers", {})
+    if not known_speakers:
+        print("  No registered speakers in DB, skipping matching")
+        return {label: label for label in sample_paths}
+
+    known_embeds = {}
+    for name, info in known_speakers.items():
+        embed_path = os.path.join(SPEAKER_DB, info["embedding_file"])
+        if os.path.exists(embed_path):
+            known_embeds[name] = np.load(embed_path)
+
+    if not known_embeds:
+        return {label: label for label in sample_paths}
+
+    from pyannote.audio import Inference
+    embed_model = Inference(EMBED_MODEL, window="whole", device=device)
+
+    mapping = {}
+    for label, wav_path in sample_paths.items():
+        query_embed = np.array(embed_model(wav_path))
+
+        best_name = label
+        best_sim = 0.0
+        for name, known_embed in known_embeds.items():
+            sim = float(np.dot(query_embed, known_embed) /
+                       (np.linalg.norm(query_embed) * np.linalg.norm(known_embed) + 1e-8))
+            if sim > best_sim:
+                best_sim = sim
+                best_name = name
+
+        if best_sim >= SPEAKER_MATCH_THRESHOLD:
+            mapping[label] = best_name
+            print(f"  {label} → {best_name} (similarity: {best_sim:.4f})")
+        else:
+            mapping[label] = label
+            print(f"  {label} → unknown (best match: {best_sim:.4f} < {SPEAKER_MATCH_THRESHOLD})")
+
+    del embed_model
+    return mapping
+
+
+def save_unknown_embeddings(sample_paths: dict, speaker_map: dict, device: str):
+    """Save embeddings for unmatched speakers for future registration."""
+    unmatched = {label: path for label, path in sample_paths.items()
+                 if speaker_map.get(label, label) == label}
+    if not unmatched:
+        return
+
+    os.environ["HF_HOME"] = HF_CACHE
+    from pyannote.audio import Inference
+    embed_model = Inference(EMBED_MODEL, window="whole", device=device)
+
+    for label, wav_path in unmatched.items():
+        embed = np.array(embed_model(wav_path))
+        embed_path = wav_path.rsplit(".", 1)[0] + ".npy"
+        np.save(embed_path, embed)
+        print(f"  Saved embedding for {label} → {embed_path}")
+
+    del embed_model
 
 
 def transcribe(audio_path: str, language: str, output_format: str,
                diarize: bool = False, output_dir: str = ASR_DIR,
-               device: str = None):
+               device: str = None, topic: str = None,
+               hotwords_file: str = None, corrections_file: str = None,
+               no_opencc: bool = False):
     import whisperx
     import torch
 
@@ -150,6 +321,17 @@ def transcribe(audio_path: str, language: str, output_format: str,
         device = detect_best_device()
 
     compute = COMPUTE_TYPE if device == "cuda" else "int8"
+
+    hotwords_str = load_hotwords(hotwords_file or DEFAULT_HOTWORDS_FILE)
+    corrections = load_corrections(corrections_file or DEFAULT_CORRECTIONS_FILE)
+
+    asr_options = {}
+    if topic:
+        asr_options["initial_prompt"] = topic
+        print(f"Using topic as initial_prompt: {topic}")
+    if hotwords_str:
+        asr_options["hotwords"] = hotwords_str
+
     print(f"Loading WhisperX model: {MODEL_SIZE} (device={device}, compute={compute})")
 
     model = whisperx.load_model(
@@ -157,6 +339,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
         device=device,
         compute_type=compute,
         download_root=os.path.join(HF_CACHE, "whisperx"),
+        asr_options=asr_options if asr_options else None,
     )
 
     print(f"Loading audio: {audio_path}")
@@ -190,24 +373,46 @@ def transcribe(audio_path: str, language: str, output_format: str,
             return_char_alignments=False,
         )
         print(f"Aligned segments: {len(result['segments'])}")
+        del align_model
     except Exception as e:
         print(f"WARNING: Alignment failed ({e}), using original timestamps")
 
-    if diarize and HF_TOKEN:
+    speaker_map = None
+    session_dir = None
+    if diarize:
         print("Running speaker diarization...")
         try:
-            diarize_model = whisperx.DiarizationPipeline(
-                use_auth_token=HF_TOKEN,
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["HUGGINGFACE_HUB_CACHE"] = HF_CACHE
+            os.environ["HF_HOME"] = HF_CACHE
+            from whisperx.diarize import DiarizationPipeline
+            diarize_model = DiarizationPipeline(
+                model_name="pyannote/speaker-diarization-3.1",
+                token=HF_TOKEN or None,
                 device=device,
+                cache_dir=HF_CACHE,
             )
             diarize_segments = diarize_model(audio)
             result = whisperx.assign_word_speakers(diarize_segments, result)
-            speakers = set(s.get("speaker", "") for s in result["segments"] if s.get("speaker"))
-            print(f"Identified {len(speakers)} speakers: {', '.join(sorted(speakers))}")
+            speakers_found = set(s.get("speaker", "") for s in result["segments"] if s.get("speaker"))
+            print(f"Identified {len(speakers_found)} speakers: {', '.join(sorted(speakers_found))}")
+            del diarize_model
+
+            basename = Path(audio_path).stem
+            print("Extracting speaker samples...")
+            session_dir, sample_paths = extract_speaker_samples(
+                audio, result["segments"], basename, SPEAKER_SAMPLES
+            )
+
+            if sample_paths:
+                print("Matching speakers against registered DB...")
+                speaker_map = match_speakers_against_db(sample_paths, device)
+
+                print("Saving embeddings for unknown speakers...")
+                save_unknown_embeddings(sample_paths, speaker_map, device)
+
         except Exception as e:
             print(f"WARNING: Diarization failed ({e}), continuing without speaker labels")
-    elif diarize and not HF_TOKEN:
-        print("WARNING: HF_TOKEN not set, skipping diarization.")
 
     del model
     if device == "cuda":
@@ -216,16 +421,35 @@ def transcribe(audio_path: str, language: str, output_format: str,
     segments = result["segments"]
     basename = Path(audio_path).stem
 
+    # --- Post-processing: corrections + OpenCC ---
+    opencc_converter = None
+    if not no_opencc and detected_lang in ("zh", "zh-cn", "chinese"):
+        try:
+            import opencc
+            opencc_converter = opencc.OpenCC("s2twp")
+            print("OpenCC: converting simplified → traditional Chinese (s2twp)")
+        except ImportError:
+            print("WARNING: opencc-python-reimplemented not installed, skipping conversion")
+
+    for seg in segments:
+        text = seg["text"].strip()
+        if corrections:
+            text = apply_corrections(text, corrections)
+        if opencc_converter:
+            text = convert_to_traditional(text, opencc_converter)
+        seg["text"] = text
+
     srt_path = os.path.join(output_dir, f"{basename}.srt")
-    write_srt(segments, srt_path, include_speaker=diarize)
+    write_srt(segments, srt_path, speaker_map=speaker_map)
     print(f"SRT: {srt_path}")
 
     txt_path = os.path.join(output_dir, f"{basename}.txt")
     full_text_parts = []
     for seg in segments:
         text = seg["text"].strip()
-        if diarize and "speaker" in seg:
-            text = f"[{seg['speaker']}] {text}"
+        if speaker_map and "speaker" in seg:
+            name = speaker_map.get(seg["speaker"], seg["speaker"])
+            text = f"[{name}] {text}"
         full_text_parts.append(text)
     full_text = "\n".join(full_text_parts)
     with open(txt_path, "w", encoding="utf-8") as f:
@@ -242,7 +466,12 @@ def transcribe(audio_path: str, language: str, output_format: str,
                 "text": seg["text"].strip(),
             }
             if "speaker" in seg:
-                entry["speaker"] = seg["speaker"]
+                raw_spk = seg["speaker"]
+                entry["speaker_raw"] = raw_spk
+                if speaker_map:
+                    entry["speaker"] = speaker_map.get(raw_spk, raw_spk)
+                else:
+                    entry["speaker"] = raw_spk
             if "words" in seg:
                 entry["words"] = [
                     {"word": w.get("word", ""), "start": w.get("start", 0), "end": w.get("end", 0)}
@@ -259,6 +488,11 @@ def transcribe(audio_path: str, language: str, output_format: str,
                 "engine": "whisperx",
                 "device": device,
                 "diarization": diarize,
+                "topic": topic,
+                "hotwords_file": hotwords_file or DEFAULT_HOTWORDS_FILE,
+                "opencc": "s2twp" if opencc_converter else None,
+                "speaker_map": speaker_map,
+                "speaker_samples_dir": session_dir,
             }, f, ensure_ascii=False, indent=2)
         print(f"JSON: {json_path}")
 
@@ -268,9 +502,18 @@ def transcribe(audio_path: str, language: str, output_format: str,
     print(f"  Segments: {len(segments)}")
     print(f"  Language: {detected_lang}")
     print(f"  Engine: WhisperX ({MODEL_SIZE}) on {device}")
-    if diarize:
-        speakers = set(s.get("speaker", "") for s in segments if s.get("speaker"))
-        print(f"  Speakers: {len(speakers)}")
+    if topic:
+        print(f"  Topic: {topic}")
+    if opencc_converter:
+        print(f"  OpenCC: s2twp (繁體中文)")
+    if diarize and speaker_map:
+        matched = sum(1 for v in speaker_map.values() if not v.startswith("SPEAKER_"))
+        print(f"  Speakers: {len(speaker_map)} ({matched} matched to known)")
+        if session_dir:
+            print(f"  Speaker samples: {session_dir}")
+    elif diarize:
+        speakers_found = set(s.get("speaker", "") for s in segments if s.get("speaker"))
+        print(f"  Speakers: {len(speakers_found)}")
     print(f"  SRT: {srt_path}")
 
     return segments
@@ -278,7 +521,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="WhisperX ASR Pipeline with alignment and optional diarization")
+        description="WhisperX ASR Pipeline v2 with enhanced features")
     parser.add_argument("input", help="Input audio/video file path or Google Drive URL")
     parser.add_argument("--lang", default="zh", help="Language code (zh, en, ja, auto)")
     parser.add_argument("--format", default="srt", choices=["srt", "text", "json", "all"],
@@ -290,6 +533,16 @@ def main():
                         help="Batch size for inference")
     parser.add_argument("--device", default=None, choices=["cuda", "cpu"],
                         help="Force device (default: auto-detect)")
+    parser.add_argument("--topic", default=None,
+                        help="Topic description for initial_prompt (improves accuracy)")
+    parser.add_argument("--denoise", action="store_true",
+                        help="Apply audio denoising before transcription")
+    parser.add_argument("--hotwords-file", default=DEFAULT_HOTWORDS_FILE,
+                        help="Path to hotwords file (one word per line)")
+    parser.add_argument("--corrections-file", default=DEFAULT_CORRECTIONS_FILE,
+                        help="Path to corrections JSON file")
+    parser.add_argument("--no-opencc", action="store_true",
+                        help="Disable OpenCC simplified→traditional conversion")
     args = parser.parse_args()
 
     input_path = args.input
@@ -308,9 +561,14 @@ def main():
     wav_path = os.path.join(args.output_dir, f"{basename}.wav")
 
     if mime.startswith("video/") or (mime.startswith("audio/") and not input_path.endswith(".wav")):
-        extract_audio(input_path, wav_path)
+        extract_audio(input_path, wav_path, denoise=args.denoise)
     elif input_path.endswith(".wav"):
-        wav_path = input_path
+        if args.denoise:
+            denoised_path = os.path.join(args.output_dir, f"{basename}_denoised.wav")
+            extract_audio(input_path, denoised_path, denoise=True)
+            wav_path = denoised_path
+        else:
+            wav_path = input_path
 
     segments = transcribe(
         wav_path,
@@ -319,6 +577,10 @@ def main():
         diarize=args.diarize,
         output_dir=args.output_dir,
         device=args.device,
+        topic=args.topic,
+        hotwords_file=args.hotwords_file,
+        corrections_file=args.corrections_file,
+        no_opencc=args.no_opencc,
     )
     print(f"\nDone! {len(segments)} segments transcribed.")
 
