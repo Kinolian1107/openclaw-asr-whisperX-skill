@@ -174,6 +174,43 @@ def apply_corrections(text: str, corrections: dict) -> str:
     return text
 
 
+def clean_repetitions(text: str) -> str:
+    """Remove repeated character/word sequences caused by Whisper hallucinations."""
+    # Detect character-level repetition: same char repeated 4+ times (e.g. 馬馬馬馬馬)
+    text = re.sub(r'(.)\1{3,}', r'\1\1', text)
+
+    # Detect short phrase repetition: 2-10 char phrases repeated 3+ times
+    text = re.sub(r'(.{2,10}?)\1{2,}', r'\1', text)
+
+    # Detect comma-separated number repetition (e.g. "000,000,000,000,...")
+    text = re.sub(r'((?:\d{1,3},){3,})\d{1,3}(?:,\d{1,3})*', r'\1', text)
+
+    return text.strip()
+
+
+def is_hallucination(text: str) -> bool:
+    """Detect if a segment is a hallucination (too repetitive or nonsensical)."""
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+
+    if len(cleaned) < 2:
+        return False
+
+    # Check if >60% of text is the same character
+    from collections import Counter
+    char_counts = Counter(cleaned.replace(" ", ""))
+    if char_counts and char_counts.most_common(1)[0][1] / len(cleaned.replace(" ", "")) > 0.6:
+        return True
+
+    # Check for very high compression ratio (repetitive content)
+    unique_chars = len(set(cleaned))
+    if len(cleaned) > 20 and unique_chars < len(cleaned) * 0.1:
+        return True
+
+    return False
+
+
 def convert_to_traditional(text: str, converter) -> str:
     return converter.convert(text)
 
@@ -325,7 +362,13 @@ def transcribe(audio_path: str, language: str, output_format: str,
     hotwords_str = load_hotwords(hotwords_file or DEFAULT_HOTWORDS_FILE)
     corrections = load_corrections(corrections_file or DEFAULT_CORRECTIONS_FILE)
 
-    asr_options = {}
+    asr_options = {
+        "no_repeat_ngram_size": 3,
+        "repetition_penalty": 1.2,
+        "hallucination_silence_threshold": 2.0,
+        "compression_ratio_threshold": 2.4,
+        "condition_on_previous_text": False,
+    }
     if topic:
         asr_options["initial_prompt"] = topic
         print(f"Using topic as initial_prompt: {topic}")
@@ -421,7 +464,13 @@ def transcribe(audio_path: str, language: str, output_format: str,
     segments = result["segments"]
     basename = Path(audio_path).stem
 
-    # --- Post-processing: corrections + OpenCC ---
+    # --- Post-processing: hallucination filter + corrections + OpenCC ---
+    pre_filter_count = len(segments)
+    segments = [seg for seg in segments if not is_hallucination(seg.get("text", ""))]
+    hallucination_count = pre_filter_count - len(segments)
+    if hallucination_count > 0:
+        print(f"Filtered {hallucination_count} hallucinated segments ({pre_filter_count} → {len(segments)})")
+
     opencc_converter = None
     if not no_opencc and detected_lang in ("zh", "zh-cn", "chinese"):
         try:
@@ -433,6 +482,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
 
     for seg in segments:
         text = seg["text"].strip()
+        text = clean_repetitions(text)
         if corrections:
             text = apply_corrections(text, corrections)
         if opencc_converter:
