@@ -107,6 +107,12 @@ HF_TOKEN=hf_xxx /home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/
     /home/kino/asr/{filename} --lang zh --format srt --topic "主題" --diarize
 ```
 
+With subtitle splitting (limit characters per line):
+```bash
+/home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
+    /home/kino/asr/{filename} --lang zh --format srt --topic "主題" --max-chars 20
+```
+
 Full options:
 ```bash
 /home/kino/asr/.venv-whisperx/bin/python3 "${SKILL_DIR}/scripts/transcribe_whisperx.py" \
@@ -116,6 +122,7 @@ Full options:
     --topic "主題描述" \
     --denoise \
     --diarize \
+    --max-chars 20 \
     --hotwords-file /home/kino/.openclaw/workspace/whisperx_hotwords.txt \
     --corrections-file /home/kino/.openclaw/workspace/asr_corrections.json
 ```
@@ -190,6 +197,7 @@ When user says "把 SPEAKER_00 命名為 XXX" or "rename speaker":
 | `--topic` | (none) | Topic description for initial_prompt |
 | `--denoise` | false | Apply audio denoising |
 | `--no-opencc` | false | Disable OpenCC traditional Chinese conversion |
+| `--max-chars` | 0 (disabled) | Max characters per subtitle segment (recommended: 20 for Chinese) |
 
 ## Config Files
 

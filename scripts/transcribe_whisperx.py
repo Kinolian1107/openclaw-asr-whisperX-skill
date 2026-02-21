@@ -215,6 +215,68 @@ def convert_to_traditional(text: str, converter) -> str:
     return converter.convert(text)
 
 
+def split_long_segments(segments, max_chars):
+    """Split segments exceeding max_chars using word-level timestamps."""
+    if not max_chars or max_chars <= 0:
+        return segments
+
+    new_segments = []
+    for seg in segments:
+        text = seg["text"].strip()
+        if len(text) <= max_chars:
+            new_segments.append(seg)
+            continue
+
+        words = seg.get("words", [])
+        valid_words = [w for w in words if w.get("word")]
+        if not valid_words:
+            new_segments.append(seg)
+            continue
+
+        current_text = ""
+        current_words = []
+        sub_start = None
+
+        for w in valid_words:
+            word_text = w.get("word", "")
+            candidate = current_text + word_text
+
+            if len(candidate) > max_chars and current_text.strip():
+                last_end = current_words[-1].get("end") if current_words else None
+                new_seg = {
+                    "start": sub_start if sub_start is not None else seg["start"],
+                    "end": last_end if last_end is not None else seg["end"],
+                    "text": current_text.strip(),
+                    "words": current_words,
+                }
+                if "speaker" in seg:
+                    new_seg["speaker"] = seg["speaker"]
+                new_segments.append(new_seg)
+
+                current_text = word_text
+                current_words = [w]
+                sub_start = w.get("start")
+            else:
+                if sub_start is None:
+                    sub_start = w.get("start", seg["start"])
+                current_text = candidate
+                current_words.append(w)
+
+        if current_text.strip():
+            last_end = current_words[-1].get("end") if current_words else None
+            new_seg = {
+                "start": sub_start if sub_start is not None else seg["start"],
+                "end": last_end if last_end is not None else seg["end"],
+                "text": current_text.strip(),
+                "words": current_words,
+            }
+            if "speaker" in seg:
+                new_seg["speaker"] = seg["speaker"]
+            new_segments.append(new_seg)
+
+    return new_segments
+
+
 def write_srt(segments, filepath, speaker_map=None):
     with open(filepath, "w", encoding="utf-8") as f:
         for i, seg in enumerate(segments, 1):
@@ -347,7 +409,7 @@ def transcribe(audio_path: str, language: str, output_format: str,
                diarize: bool = False, output_dir: str = ASR_DIR,
                device: str = None, topic: str = None,
                hotwords_file: str = None, corrections_file: str = None,
-               no_opencc: bool = False):
+               no_opencc: bool = False, max_chars: int = 0):
     import whisperx
     import torch
 
@@ -489,6 +551,11 @@ def transcribe(audio_path: str, language: str, output_format: str,
             text = convert_to_traditional(text, opencc_converter)
         seg["text"] = text
 
+    if max_chars and max_chars > 0:
+        pre_split = len(segments)
+        segments = split_long_segments(segments, max_chars)
+        print(f"Split segments by max_chars={max_chars}: {pre_split} → {len(segments)}")
+
     srt_path = os.path.join(output_dir, f"{basename}.srt")
     write_srt(segments, srt_path, speaker_map=speaker_map)
     print(f"SRT: {srt_path}")
@@ -593,6 +660,8 @@ def main():
                         help="Path to corrections JSON file")
     parser.add_argument("--no-opencc", action="store_true",
                         help="Disable OpenCC simplified→traditional conversion")
+    parser.add_argument("--max-chars", type=int, default=0,
+                        help="Max characters per subtitle segment (0=disabled, recommended: 20 for Chinese)")
     args = parser.parse_args()
 
     input_path = args.input
@@ -631,6 +700,7 @@ def main():
         hotwords_file=args.hotwords_file,
         corrections_file=args.corrections_file,
         no_opencc=args.no_opencc,
+        max_chars=args.max_chars,
     )
     print(f"\nDone! {len(segments)} segments transcribed.")
 
